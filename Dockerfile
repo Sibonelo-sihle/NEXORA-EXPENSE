@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY server ./server
+COPY src/lib/pricing.ts ./src/lib/pricing.ts
 RUN npm run build:server
 
 FROM node:22-bookworm-slim AS runtime
