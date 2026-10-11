@@ -71,6 +71,8 @@ async function api(page: Page, expired = false) {
     else if (url.pathname === "/rest/v1/payment_events") response = [];
     else if (url.pathname === "/rest/v1/profiles")
       response = { full_name: "Owner" };
+    else if (url.pathname === "/rest/v1/receipt_processing") response = [];
+    else if (url.pathname === "/rest/v1/receipts") response = [];
     else if (url.pathname === "/rest/v1/expenses") {
       if (req.method() === "POST")
         expenses.push({ ...req.postDataJSON(), id: "expense-2" });
@@ -314,6 +316,15 @@ test("receipts validate type, upload privately and can download", async ({
   page,
 }) => {
   await api(page);
+  await page.route("**/api/receipts/process", (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        error:
+          "Receipt reading is not configured. Add the Azure Document Intelligence settings and retry.",
+      },
+    }),
+  );
   let stored: any[] = [];
   await page.route(
     "https://nexora-test.supabase.co/storage/v1/**",
@@ -343,6 +354,9 @@ test("receipts validate type, upload privately and can download", async ({
   );
   await login(page);
   await page.goto("http://127.0.0.1:3101/receipts");
+  await expect(
+    page.getByText("Upload a receipt. NEXORA will take care of the rest."),
+  ).toBeVisible();
   await page.getByLabel("Upload receipt").setInputFiles({
     name: "bad.txt",
     mimeType: "text/plain",
@@ -355,6 +369,7 @@ test("receipts validate type, upload privately and can download", async ({
     buffer: Buffer.from("%PDF-1.4 test"),
   });
   await expect(page.getByText("invoice.pdf", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("Azure Document Intelligence");
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download", exact: true }).click();
   expect((await download).suggestedFilename()).toContain("invoice.pdf");

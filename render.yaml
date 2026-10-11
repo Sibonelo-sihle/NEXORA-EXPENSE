@@ -22,7 +22,13 @@ services:
         sync: false
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
+        sync: false
+      - key: AZURE_DOCUMENT_INTELLIGENCE_KEY
         sync: false
       - key: PAYFAST_NOTIFY_URL
         sync: false

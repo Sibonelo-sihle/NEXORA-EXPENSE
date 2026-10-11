@@ -112,18 +112,43 @@ Vite embeds `VITE_*` values in the browser bundle. Treat them as public.
 
 ### Backend runtime variables
 
-Configure `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
-`APP_ORIGIN`, `CORS_ORIGINS`, and the exact trusted
-`TRUSTED_PROXY_CIDRS` only in the API host's secret/environment settings. Keep
+Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`,
+`AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT`,
+`AZURE_DOCUMENT_INTELLIGENCE_KEY`, `APP_ORIGIN`, `CORS_ORIGINS`, and the exact
+trusted `TRUSTED_PROXY_CIDRS` only in the API host's secret/environment settings.
+`SUPABASE_ANON_KEY` must match the frontend public key; it is used only with a
+verified user's bearer token for their `billing_access()` check. Keep
 `PAYFAST_MODE=sandbox`, `PAYFAST_LIVE_ENABLED=false`, and
 `RELEASE_SANDBOX_ONLY=true`. Add sandbox merchant credentials and
 `PAYFAST_NOTIFY_URL` only to the backend environment when authorized testing
 is ready. Never commit real values.
 
+### Smart receipt processing
+
+The API uses Azure AI Document Intelligence's `prebuilt-receipt` model for
+private JPG, PNG, scanned images, and PDF inputs. Create an Azure Document
+Intelligence resource, then set its HTTPS endpoint and key as the two
+`AZURE_DOCUMENT_INTELLIGENCE_*` Render secrets. The key must never be placed in
+a `VITE_*` variable. The backend rejects uncertain/missing required fields,
+bank statements, repeat file hashes, and likely duplicate expenses rather
+than guessing or creating a misleading expense. Confident receipts create a
+`Pending` expense linked to the private receipt for review. The existing
+5 MB file cap, four processing attempts per receipt, and ten-request-per-minute
+workspace limit constrain upload and OCR spend. Subscription plans do not
+currently define OCR quotas, so no per-plan allowance is assumed.
+
+Apply `supabase/migrations/006_smart_receipt_processing.sql` once after the
+existing billing/receipt schema (production has already applied reconciliation
+005; do not rerun 005). This migration adds tenant-readable processing status
+and service-only idempotent processing functions. It does not modify existing
+expenses, receipt files, RLS policies, billing state, or trial dates. Existing
+receipts can be submitted individually with **Read receipt**; they are not
+processed until requested.
+
 ## Database and security
 
 For a new, empty Supabase project, review and apply the ordered migrations
-`001`–`004` using the instructions in
+`001`–`004`, then `006`, using the instructions in
 [`docs/DATABASE_SETUP.md`](docs/DATABASE_SETUP.md) and
 [`docs/LAUNCH.md`](docs/LAUNCH.md). Existing production data requires a backup,
 inventory, and migration-history review first. The production-specific

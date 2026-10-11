@@ -18,8 +18,10 @@ psql -h "$nexora_test_dir" -p "$nexora_test_port" -d postgres -v ON_ERROR_STOP=1
  -f supabase/migrations/002_secure_saas.sql \
  -f supabase/migrations/003_currency_and_release_security.sql \
  -f supabase/migrations/004_workspace_and_receipt_metadata.sql \
+ -f supabase/migrations/006_smart_receipt_processing.sql \
  -f supabase/tests/security.sql \
- -f supabase/tests/workspace.sql
+ -f supabase/tests/workspace.sql \
+ -f supabase/tests/receipt_processing.sql
 # Real concurrent connections: one owner workspace and trial despite overlapping logins.
 psql -h "$nexora_test_dir" -p "$nexora_test_port" -d postgres -v ON_ERROR_STOP=1 -q -c "insert into auth.users(id) values('cccccccc-cccc-cccc-cccc-cccccccccccc')"
 for nexora_connection in 1 2; do
@@ -47,7 +49,7 @@ fi
 echo 'PASS: setup bundle rejects an existing schema without dropping tables'
 # The conditional repair is not part of the normal migration chain.
 createdb -h "$nexora_test_dir" -p "$nexora_test_port" nexora_reconcile
-psql -h "$nexora_test_dir" -p "$nexora_test_port" -d nexora_reconcile -v ON_ERROR_STOP=1 -q -f supabase/tests/bootstrap.sql -f supabase/migrations/001_initial_schema.sql -f supabase/tests/partial_schema.sql -f supabase/reconciliation/005_reconcile_missing_billing.sql -f supabase/tests/reconciliation.sql -f supabase/tests/workspace.sql
+psql -h "$nexora_test_dir" -p "$nexora_test_port" -d nexora_reconcile -v ON_ERROR_STOP=1 -q -f supabase/tests/bootstrap.sql -f supabase/migrations/001_initial_schema.sql -f supabase/tests/partial_schema.sql -f supabase/reconciliation/005_reconcile_missing_billing.sql -f supabase/migrations/006_smart_receipt_processing.sql -f supabase/tests/reconciliation.sql -f supabase/tests/workspace.sql -f supabase/tests/receipt_processing.sql
 psql -h "$nexora_test_dir" -p "$nexora_test_port" -d nexora_reconcile -v ON_ERROR_STOP=1 -q <<'SQL'
 do $$begin
  if(select count(*) from expenses where merchant='Preserved existing expense' and amount=12.34)<>1 then raise exception 'Existing expense altered';end if;
@@ -67,7 +69,7 @@ fi
 echo 'PASS: reconciliation refuses an existing billing installation'
 
 createdb -h "$nexora_test_dir" -p "$nexora_test_port" nexora_explicit_deadline
-psql -h "$nexora_test_dir" -p "$nexora_test_port" -d nexora_explicit_deadline -v ON_ERROR_STOP=1 -q -f supabase/tests/bootstrap.sql -f supabase/migrations/001_initial_schema.sql -f supabase/tests/partial_schema.sql -f supabase/tests/explicit_trial_deadline.sql -f supabase/reconciliation/005_reconcile_missing_billing.sql -f supabase/tests/reconciliation.sql
+psql -h "$nexora_test_dir" -p "$nexora_test_port" -d nexora_explicit_deadline -v ON_ERROR_STOP=1 -q -f supabase/tests/bootstrap.sql -f supabase/migrations/001_initial_schema.sql -f supabase/tests/partial_schema.sql -f supabase/tests/explicit_trial_deadline.sql -f supabase/reconciliation/005_reconcile_missing_billing.sql -f supabase/migrations/006_smart_receipt_processing.sql -f supabase/tests/reconciliation.sql -f supabase/tests/receipt_processing.sql
 psql -h "$nexora_test_dir" -p "$nexora_test_port" -d nexora_explicit_deadline -v ON_ERROR_STOP=1 -q <<'SQL'
 do $$begin if exists(select 1 from subscriptions s join businesses b on b.id=s.business_id where s.trial_ends_at is distinct from b.trial_ends_at) then raise exception 'Explicit original deadline changed';end if;end $$;
 SQL

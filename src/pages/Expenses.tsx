@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useBusiness, type Expense } from "../contexts/BusinessContext";
 import { db, check } from "../lib/supabase";
 import { listReceipts, uploadReceipt, receiptName } from "../lib/receipts";
@@ -22,6 +23,9 @@ const initial = {
 };
 export default function Expenses() {
   const { business, expenses, categories, access, refresh } = useBusiness();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const receiptId = searchParams.get("receipt");
+  const openingReceipt = useRef<string | null>(null);
   const [search, setSearch] = useState(""),
     [category, setCategory] = useState(""),
     [editing, setEditing] = useState<string | null>(null),
@@ -36,6 +40,90 @@ export default function Expenses() {
         .then(setReceipts)
         .catch((e) => setError(e.message));
   }, [editing, business.id]);
+  useEffect(() => {
+    if (!receiptId || openingReceipt.current === receiptId) return;
+    openingReceipt.current = receiptId;
+    let cancelled = false;
+    async function openReceipt() {
+      try {
+        const processingResult = await db()
+          .from("receipt_processing")
+          .select("receipt_id,status,extracted_data,expense_id")
+          .eq("receipt_id", receiptId)
+          .eq("business_id", business.id)
+          .single();
+        if (processingResult.error) throw processingResult.error;
+        const processing = processingResult.data;
+        const receiptResult = await db()
+          .from("receipts")
+          .select("storage_path")
+          .eq("id", receiptId)
+          .eq("business_id", business.id)
+          .single();
+        if (receiptResult.error) throw receiptResult.error;
+        const receipt = receiptResult.data;
+        if (!processing || !receipt)
+          throw new Error("Receipt details are unavailable.");
+        if (cancelled) return;
+        const linked = expenses.find(
+          (expense) =>
+            expense.id === processing.expense_id ||
+            expense.receipt_url === receipt.storage_path,
+        );
+        if (linked) {
+          edit(linked);
+        } else {
+          const extracted = processing.extracted_data as Record<
+            string,
+            unknown
+          >;
+          const currency =
+            typeof extracted.currency === "string" &&
+            currencies.includes(extracted.currency as (typeof currencies)[number])
+              ? (extracted.currency as (typeof currencies)[number])
+              : "";
+          setForm({
+            ...initial,
+            merchant:
+              typeof extracted.merchant === "string" ? extracted.merchant : "",
+            amount:
+              typeof extracted.amount === "number"
+                ? String(extracted.amount)
+                : "",
+            currency,
+            date: typeof extracted.date === "string" ? extracted.date : "",
+            category_id:
+              typeof extracted.suggested_category_id === "string" &&
+              categories.some(
+                (category) =>
+                  category.id === extracted.suggested_category_id,
+              )
+                ? extracted.suggested_category_id
+                : "",
+            description:
+              typeof extracted.description === "string"
+                ? extracted.description
+                : "",
+            receipt_url: receipt.storage_path,
+          });
+          setEditing("new");
+          setReceipts(await listReceipts(business.id));
+        }
+        setSearchParams({}, { replace: true });
+      } catch (e) {
+        if (!cancelled)
+          setError(
+            e instanceof Error
+              ? e.message
+              : "Unable to open receipt details for review.",
+          );
+      }
+    }
+    void openReceipt();
+    return () => {
+      cancelled = true;
+    };
+  }, [receiptId, business.id, expenses, categories, setSearchParams]);
   async function attach(file?: File) {
     if (!file) return;
     setBusy(true);
@@ -182,6 +270,7 @@ export default function Expenses() {
             <label>
               Expense currency
               <select value={form.currency} onChange={field("currency")}>
+                <option value="">Select currency</option>
                 {currencies.map((c) => (
                   <option key={c}>{c}</option>
                 ))}

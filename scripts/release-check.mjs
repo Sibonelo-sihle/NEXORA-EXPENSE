@@ -37,8 +37,13 @@ try {
   )
     failures.push("Browser key is service_role");
 } catch {}
+const backendAnonKey = required("SUPABASE_ANON_KEY");
+if (backendAnonKey && publicKey && backendAnonKey !== publicKey)
+  failures.push("Backend and frontend public Supabase keys disagree");
 required("SUPABASE_SERVICE_ROLE_KEY");
 required("TRUSTED_PROXY_CIDRS");
+required("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT");
+required("AZURE_DOCUMENT_INTELLIGENCE_KEY");
 if (
   process.env.PAYFAST_MODE !== "sandbox" ||
   process.env.PAYFAST_LIVE_ENABLED !== "false" ||

@@ -14,6 +14,13 @@ import {
   verifyNotification,
   validProviderIp,
 } from "./payfast";
+import { analyzeReceiptDocument, documentIntelligenceConfigured } from "./document-intelligence";
+import {
+  isDuplicateMerchant,
+  parseReceiptResult,
+  suggestReceiptCategory,
+  validateReceiptContent,
+} from "./receipt-processing";
 import { subscriptionPlans } from "../src/lib/pricing";
 const app = express();
 app.disable("x-powered-by");
@@ -95,6 +102,7 @@ function config() {
 }
 // In-memory request limiter; use gateway rate limiting across instances in production.
 const attempts = new Map<string, { n: number; until: number }>();
+const receiptAttempts = new Map<string, { n: number; until: number }>();
 app.use("/api", (req, res, next) => {
   const key = req.ip ?? req.socket.remoteAddress ?? "unknown";
   const now = Date.now();
@@ -112,6 +120,318 @@ app.use("/api", (req, res, next) => {
   }
   next();
 });
+app.post(
+  "/api/receipts/process",
+  express.json({ limit: "4kb" }),
+  async (req, res) => {
+    let admin: ReturnType<typeof service> | undefined;
+    let businessId: string | undefined;
+    let receiptId: string | undefined;
+    try {
+      admin = service();
+      const token = req.headers.authorization?.match(/^Bearer ([^\s]+)$/)?.[1];
+      if (!token) {
+        res.status(401).json({ error: "Sign in to process this receipt." });
+        return;
+      }
+      const { data: authData, error: authError } =
+        await admin.auth.getUser(token);
+      const user = authData.user;
+      if (authError || !user) {
+        res.status(401).json({ error: "Session expired. Sign in again." });
+        return;
+      }
+      if (!user.email_confirmed_at) {
+        res.status(403).json({ error: "Verify your email before processing receipts." });
+        return;
+      }
+
+      const pathValue = req.body?.path;
+      if (
+        typeof pathValue !== "string" ||
+        pathValue.length > 512 ||
+        pathValue.includes("\\") ||
+        pathValue.includes("..")
+      ) {
+        res.status(400).json({ error: "Invalid receipt path." });
+        return;
+      }
+      businessId = pathValue.split("/", 1)[0];
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          businessId,
+        )
+      ) {
+        res.status(400).json({ error: "Invalid receipt path." });
+        return;
+      }
+
+      const ownedBusiness = check(
+        await admin
+          .from("businesses")
+          .select("id")
+          .eq("id", businessId)
+          .eq("owner_id", user.id)
+          .maybeSingle(),
+      );
+      if (!ownedBusiness) {
+        res.status(404).json({ error: "Receipt not found." });
+        return;
+      }
+
+      const anonKey = required("SUPABASE_ANON_KEY");
+      if (/\s/.test(anonKey)) {
+        res.status(503).json({ error: "Receipt processing is not configured." });
+        return;
+      }
+      const userClient = createClient(required("SUPABASE_URL"), anonKey, {
+        global: { headers: { Authorization: `Bearer ${token}` } },
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      });
+      const access = check(await userClient.rpc("billing_access"));
+      const entitlement = (access ?? []).find(
+        (row: { business_id: string }) => row.business_id === businessId,
+      );
+      if (!entitlement) {
+        res.status(403).json({ error: "Workspace billing access is unavailable." });
+        return;
+      }
+      if (!entitlement.can_write) {
+        res.status(403).json({
+          error: "An active trial or subscription is required to process receipts.",
+        });
+        return;
+      }
+
+      const rateKey = `${businessId}:${user.id}`;
+      const now = Date.now();
+      const recent = receiptAttempts.get(rateKey);
+      if (recent && recent.until > now && recent.n >= 10) {
+        res.status(429).json({
+          error: "Receipt processing is limited to 10 requests per workspace each minute.",
+        });
+        return;
+      }
+      if (!recent || recent.until <= now) {
+        receiptAttempts.set(rateKey, { n: 1, until: now + 60000 });
+      } else {
+        recent.n += 1;
+      }
+      if (receiptAttempts.size > 10000)
+        for (const [key, value] of receiptAttempts)
+          if (value.until <= now) receiptAttempts.delete(key);
+
+      const visibleReceipt = check(
+        await userClient
+          .from("receipts")
+          .select("id,business_id,storage_path")
+          .eq("business_id", businessId)
+          .eq("storage_path", pathValue)
+          .maybeSingle(),
+      );
+      if (!visibleReceipt) {
+        res.status(404).json({ error: "Receipt not found." });
+        return;
+      }
+      receiptId = visibleReceipt.id;
+      const current = check(
+        await admin
+          .from("receipt_processing")
+          .select("status,attempt_count,extracted_data,expense_id")
+          .eq("receipt_id", receiptId)
+          .eq("business_id", businessId)
+          .maybeSingle(),
+      );
+      if (current?.status === "completed") {
+        res.json(current);
+        return;
+      }
+      if (!documentIntelligenceConfigured()) {
+        res.status(503).json({
+          error: "Receipt reading is not configured. Add the Azure Document Intelligence settings and retry.",
+        });
+        return;
+      }
+
+      const { data: file, error: downloadError } = await admin.storage
+        .from("nexora-receipts")
+        .download(pathValue);
+      if (downloadError || !file) {
+        res.status(404).json({ error: "The private receipt file is unavailable." });
+        return;
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const extension = pathValue.split(".").at(-1)?.toLowerCase();
+      const expectedMime =
+        extension === "pdf"
+          ? "application/pdf"
+          : extension === "jpg" || extension === "jpeg"
+            ? "image/jpeg"
+            : extension === "png"
+              ? "image/png"
+              : "";
+      if (!expectedMime || (file.type && file.type !== expectedMime)) {
+        res.status(415).json({ error: "Upload a valid PDF, JPG or PNG receipt." });
+        return;
+      }
+      try {
+        validateReceiptContent(expectedMime, bytes);
+      } catch {
+        res.status(415).json({ error: "Upload a valid PDF, JPG or PNG receipt no larger than 5MB." });
+        return;
+      }
+
+      const fingerprint = createHash("sha256").update(bytes).digest("hex");
+      const acquired = check(
+        await admin.rpc("begin_receipt_processing", {
+          p_business_id: businessId,
+          p_receipt_id: receiptId,
+          p_source_sha256: fingerprint,
+        }),
+      );
+      if (!acquired.acquired) {
+        const statusCode =
+          acquired.status === "rate_limited"
+            ? 429
+            : acquired.status === "retry_limit"
+              ? 409
+              : acquired.status === "processing"
+                ? 202
+                : 200;
+        res.status(statusCode).json(acquired);
+        return;
+      }
+
+      const priorReceipt = check(
+        await admin
+          .from("receipt_processing")
+          .select("receipt_id")
+          .eq("business_id", businessId)
+          .eq("source_sha256", fingerprint)
+          .neq("receipt_id", receiptId)
+          .limit(1)
+          .maybeSingle(),
+      );
+      if (priorReceipt) {
+        const duplicate = check(
+          await admin.rpc("finish_receipt_processing", {
+            p_business_id: businessId,
+            p_receipt_id: receiptId,
+            p_status: "needs_review",
+            p_extracted_data: { review_reasons: ["duplicate_receipt"] },
+            p_duplicate_of_receipt_id: priorReceipt.receipt_id,
+          }),
+        );
+        res.json(duplicate);
+        return;
+      }
+
+      try {
+        const raw = await analyzeReceiptDocument(bytes);
+        const extraction = parseReceiptResult(raw);
+        const categories = check(
+          await admin
+            .from("categories")
+            .select("id,name")
+            .eq("business_id", businessId),
+        );
+        const categoryId = suggestReceiptCategory(extraction, categories ?? []);
+        const reasons = [...extraction.review_reasons];
+
+        if (
+          extraction.merchant &&
+          extraction.date &&
+          extraction.amount !== null &&
+          extraction.currency
+        ) {
+          const possibleDuplicates = check(
+            await admin
+              .from("expenses")
+              .select("merchant")
+              .eq("business_id", businessId)
+              .eq("date", extraction.date)
+              .eq("amount", extraction.amount)
+              .eq("currency", extraction.currency)
+              .limit(20),
+          );
+          if (isDuplicateMerchant(extraction.merchant, possibleDuplicates ?? []))
+            reasons.push("possible_duplicate_expense");
+        }
+
+        const status = reasons.length ? "needs_review" : "completed";
+        const extractedData = {
+          merchant: extraction.merchant,
+          date: extraction.date,
+          amount: extraction.amount,
+          currency: extraction.currency,
+          tax: extraction.tax,
+          document_number: extraction.document_number,
+          description: extraction.description,
+          payment_method: extraction.payment_method,
+          confidence: extraction.confidence,
+          review_reasons: [...new Set(reasons)],
+          is_bank_statement: extraction.is_bank_statement,
+          suggested_category_id: categoryId,
+          page_count: Array.isArray(raw?.analyzeResult?.pages)
+            ? raw.analyzeResult.pages.length
+            : null,
+        };
+        const result = check(
+          await admin.rpc("finish_receipt_processing", {
+            p_business_id: businessId,
+            p_receipt_id: receiptId,
+            p_status: status,
+            p_extracted_data: extractedData,
+            p_create_expense: status === "completed",
+            p_merchant: extraction.merchant,
+            p_date: extraction.date,
+            p_amount: extraction.amount,
+            p_currency: extraction.currency,
+            p_description: extraction.description,
+            p_category_id: categoryId,
+          }),
+        );
+        res.json({ ...result, extracted_data: extractedData });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        const errorCode = [
+          "provider_unavailable",
+          "provider_failed",
+          "provider_timeout",
+          "invalid_document",
+        ].includes(message)
+          ? message
+          : "processing_unavailable";
+        const failed = check(
+          await admin.rpc("finish_receipt_processing", {
+            p_business_id: businessId,
+            p_receipt_id: receiptId,
+            p_status: "failed",
+            p_extracted_data: {},
+            p_error_code: errorCode,
+          }),
+        );
+        const statusCode =
+          errorCode === "provider_timeout"
+            ? 504
+            : errorCode === "invalid_document"
+              ? 422
+              : errorCode === "provider_failed"
+                ? 502
+                : 503;
+        res.status(statusCode).json(failed);
+      }
+    } catch {
+      res.status(503).json({
+        error: "Receipt processing is temporarily unavailable. Your private upload was not removed.",
+      });
+    }
+  },
+);
 app.get("/api/health", (_req, res) => {
   let configured = false;
   try {
@@ -125,6 +445,7 @@ app.get("/api/health", (_req, res) => {
     configured,
     billingCurrency: "USD",
     usdCheckoutEnabled: false,
+    receiptProcessingConfigured: documentIntelligenceConfigured(),
   });
 });
 app.get("/api/billing/plans", (_req, res) => {
