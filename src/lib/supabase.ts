@@ -4,6 +4,8 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
 export const authConfigurationError = (() => {
   if (!url || !key || key.startsWith("your_") || url.includes("your_project"))
     return "Supabase credentials are missing. Real account login is unavailable.";
+  if (/\s/.test(url) || /\s/.test(key))
+    return "Supabase configuration contains whitespace. Set each Vercel variable to its value only, without quotes or extra lines.";
   try {
     if (new URL(url).protocol !== "https:")
       return "Supabase must use a valid HTTPS project URL.";

@@ -169,6 +169,11 @@ real acceptance attestations are supplied.
 4. Configure the four frontend build variables above in the Vercel project's
    Production environment. Set preview values separately if previews are
    enabled. Rebuild whenever a frontend variable changes.
+   Enter each variable as a separate name/value pair. The
+   `VITE_SUPABASE_ANON_KEY` value must contain only the public key—not `.env`
+   assignment labels, quotes, or extra lines. The app rejects whitespace in
+   Supabase URLs and keys before authentication so malformed headers cannot
+   reach the browser's `fetch`.
 5. Update the Content Security Policy in `vercel.json` if the approved API is
    not hosted on `*.onrender.com`, or if a custom Supabase domain is used.
 6. Deploy the backend separately on Render from the checked-in
