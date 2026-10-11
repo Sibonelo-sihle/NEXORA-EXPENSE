@@ -1,0 +1,36 @@
+# Prepared only. Creating/syncing this Blueprint deploys a service and needs approval.
+services:
+  - type: web
+    name: nexora-expense-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    autoDeployTrigger: 'off'
+    healthCheckPath: /api/health
+    envVars:
+      - key: PAYFAST_MODE
+        value: sandbox
+      - key: PAYFAST_LIVE_ENABLED
+        value: 'false'
+      - key: RELEASE_SANDBOX_ONLY
+        value: 'true'
+      - key: SERVE_FRONTEND
+        value: 'false'
+      - key: APP_ORIGIN
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: PAYFAST_NOTIFY_URL
+        sync: false
+      - key: PAYFAST_MERCHANT_ID
+        sync: false
+      - key: PAYFAST_MERCHANT_KEY
+        sync: false
+      - key: PAYFAST_PASSPHRASE
+        sync: false
+      - key: TRUSTED_PROXY_CIDRS
+        sync: false

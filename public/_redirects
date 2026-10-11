@@ -1,0 +1,9 @@
+/login /index.html 200
+/signup /index.html 200
+/forgot-password /index.html 200
+/reset-password /index.html 200
+/dashboard /index.html 200
+/expenses /index.html 200
+/receipts /index.html 200
+/reports /index.html 200
+/settings /index.html 200
